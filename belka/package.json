@@ -1,0 +1,18 @@
+{
+  "name": "belka",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "asc src/index.ts -b build/optimized.wasm -t build/optimized.wat --sourceMap --optimize"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@assemblyscript/loader": "^0.13.8"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.13.8"
+  }
+}
