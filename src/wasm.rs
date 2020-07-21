@@ -5,7 +5,7 @@ use std::result::Result;
 
 use wasmer_runtime::{error, func, imports, instantiate, Array, Ctx, Func, ImportObject, WasmPtr};
 
-type WasmData = Box<[u8]>;
+type WasmProgram = Box<[u8]>;
 
 pub struct WasmRuntime {
     execution_contexts: Vec<WasmExecutionContext>,
@@ -19,8 +19,8 @@ impl WasmRuntime {
         }
     }
 
-    pub fn execute(&self, wasm: &WasmData) {
-        let mut ctx = WasmExecutionContext::new(wasm).expect("Failed to init executionctx");
+    pub fn execute(&self, wasm: &WasmProgram) {
+        let ctx = WasmExecutionContext::new(wasm).expect("Failed to init executionctx");
         ctx.run();
     }
 
@@ -32,7 +32,7 @@ struct WasmExecutionContext {
 
 impl WasmExecutionContext {
 
-    fn new(wasm: &WasmData) -> Result<WasmExecutionContext, String> {
+    fn new(wasm: &WasmProgram) -> Result<WasmExecutionContext, String> {
         let abort = |_: i32, _: i32, _: i32, _: i32| std::process::exit(-1);
         let log = move |ctx: &mut Ctx, ptr: WasmPtr<u8, Array>, len: u32| {
             let memory = ctx.memory(0);
@@ -65,7 +65,7 @@ impl WasmExecutionContext {
 pub struct WasmLoader {}
 impl WasmLoader {
 
-    pub fn load(file: &str) -> io::Result<WasmData> {
+    pub fn load(file: &str) -> io::Result<WasmProgram> {
         let mut f = File::open(file)?;
         let mut buffer = Vec::new();
         f.read_to_end(&mut buffer)?;
