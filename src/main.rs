@@ -10,5 +10,9 @@ fn main() -> Result<(), String> {
     let runtime = WasmRuntime::new();
     runtime.execute(&wasm);
 
+    std::thread::sleep_ms(1000);
+
+    runtime.stop();
+
     Ok(())
 }
