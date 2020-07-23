@@ -13,7 +13,7 @@ pub struct WasmRuntime{
     execution_contexts: Vec<WasmExecutionContext>,
 }
 
-impl<'a> WasmRuntime {
+impl WasmRuntime {
 
     pub fn new() -> WasmRuntime {
         WasmRuntime{
@@ -53,7 +53,7 @@ impl WasmExecutionContext {
     }
 
     fn run(self) {
-        self.exec_tx.send(ExecutorCommand::Call("start".to_string()));
+        self.exec_tx.send(ExecutorCommand::Call("init".to_string()));
     }
 
     fn join(self) {
@@ -81,12 +81,18 @@ impl ExecutorThread {
             let string = ptr.get_utf8_string(memory, len * 2).unwrap();
             println!("log: {}", string);
         };
+        let stream_register = |_ctx: &mut Ctx, _: i32, _:i32, fncptr:i32| {
+            println!("here, {}", fncptr);
+        };
         let fn_table = imports! {
             "env" => {
                 "abort" => func!(abort),
             },
             "host" => {
                 "host.log" => func!(log),
+            },
+            "stream" => {
+                "stream.register" => func!(stream_register),
             }
         };
         
