@@ -3,7 +3,7 @@ use std::io::Read;
 use std::fs::File;
 use std::result::Result;
 use std::thread;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::collections::HashMap;
 
 use wasmer_runtime::{func, imports, instantiate, Array, Ctx, Func, WasmPtr};
@@ -11,12 +11,12 @@ use wasmer_runtime::{func, imports, instantiate, Array, Ctx, Func, WasmPtr};
 
 type WasmProgram = Box<[u8]>;
 
-// module name, function table index
-type FunctionIndex = (String, u32);
+#[derive(Debug)]
+struct FunctionIndex { module: String, func: u32 }
 
 pub struct WasmRuntime{
     execution_contexts: HashMap<String, WasmExecutionContext>,
-    stream_handlers: HashMap<String, Vec<FunctionIndex>>,
+    stream_handlers: Arc<Mutex<HashMap<String, Vec<FunctionIndex>>>>,
     request_servicer: Option<thread::JoinHandle<()>>,
     req_tx: mpsc::Sender<ExecutorRequest>,
 }
@@ -27,17 +27,19 @@ impl WasmRuntime {
         let (tx, rx) = mpsc::channel::<ExecutorRequest>();
         let mut runtime = WasmRuntime{
             execution_contexts: HashMap::new(),
-            stream_handlers: HashMap::new(),
+            stream_handlers: Arc::new(Mutex::new(HashMap::new())),
             request_servicer: None,
             req_tx: tx,
         };
-        runtime.request_servicer = Some(thread::spawn(|| RuntimeRequestServicer::request_servicer(rx)));
+
+        let send_handlers = Arc::clone(&runtime.stream_handlers);
+        runtime.request_servicer = Some(thread::spawn(|| RuntimeRequestServicer::request_servicer(rx, send_handlers)));
 
         runtime
     }
 
     pub fn init_module(&mut self, module_name: String, wasm: &WasmProgram) {
-        let ctx = WasmExecutionContext::new(wasm, self.req_tx.clone()).expect("Failed to init executionctx");
+        let ctx = WasmExecutionContext::new(module_name.clone(), wasm, self.req_tx.clone()).expect("Failed to init executionctx");
         ctx.initialise();
 
         self.execution_contexts.insert(module_name, ctx);
@@ -56,9 +58,19 @@ struct RuntimeRequestServicer {
 }
 impl RuntimeRequestServicer {
 
-    fn request_servicer(rx: mpsc::Receiver<ExecutorRequest>) {
+    fn request_servicer(rx: mpsc::Receiver<ExecutorRequest>, handlers: Arc<Mutex<HashMap<String, Vec<FunctionIndex>>>>) {
         while let Ok(msg) = rx.recv() {
-            println!("request_svc: recv {:?}", msg);
+            match msg {
+                ExecutorRequest::RegisterHandler{stream, module, func_ptr} => {
+                    println!("Registering handler for stream {}, {}::{}", stream, module, func_ptr);
+                    let func_idx = FunctionIndex{ module, func: func_ptr };
+
+                    let mut h = handlers.lock().unwrap();
+                    h.entry(stream).or_insert_with(Vec::new).push(func_idx);
+
+                    println!("{:?}", h);
+                }
+            }
         }
     }
 
@@ -71,9 +83,9 @@ struct WasmExecutionContext {
 
 impl WasmExecutionContext {
 
-    fn new(wasm: &WasmProgram, tx_request: mpsc::Sender<ExecutorRequest>) -> Result<WasmExecutionContext, String> {
+    fn new(module: String, wasm: &WasmProgram, tx_request: mpsc::Sender<ExecutorRequest>) -> Result<WasmExecutionContext, String> {
         let (tx_cmd, rx_cmd) = mpsc::channel::<ExecutorCommand>();
-        let mut exec_thd = ExecutorThread::new(rx_cmd, tx_request, wasm);
+        let mut exec_thd = ExecutorThread::new(module, rx_cmd, tx_request, wasm);
         let thread_handle = thread::spawn(move || exec_thd.run());
 
         Ok(WasmExecutionContext{
@@ -107,6 +119,7 @@ unsafe impl Sync for ExecutorRequest {}
 
 
 struct ExecutorThread {
+    module_name: String,
     cmd_rx: mpsc::Receiver<ExecutorCommand>,
     req_tx: mpsc::Sender<ExecutorRequest>,
     instance: Option<wasmer_runtime::Instance>,
@@ -115,8 +128,9 @@ struct ExecutorThread {
 
 impl ExecutorThread {
 
-    fn new(cmd_rx: mpsc::Receiver<ExecutorCommand>, req_tx: mpsc::Sender<ExecutorRequest>, wasm: &WasmProgram) -> ExecutorThread {
+    fn new(module_name: String, cmd_rx: mpsc::Receiver<ExecutorCommand>, req_tx: mpsc::Sender<ExecutorRequest>, wasm: &WasmProgram) -> ExecutorThread {
         ExecutorThread{
+            module_name,
             cmd_rx,
             req_tx,
             instance: None,
@@ -126,18 +140,22 @@ impl ExecutorThread {
 
     fn run(&mut self) {
         let req_tx = self.req_tx.clone();
+        let module_name = self.module_name.clone();
 
         let abort = |_: i32, _: i32, _: i32, _: i32| std::process::exit(-1);
-        let log = move |ctx: &mut Ctx, ptr: WasmPtr<u8, Array>, len: u32| {
+        let log = move |ctx: &mut Ctx, ptr: WasmPtr<u16, Array>, len: u32| {
             let memory = ctx.memory(0);
-            let string = ptr.get_utf8_string(memory, len * 2).unwrap();
+            let string = Util::utf16_string(memory, ptr, len);
             println!("log: {}", string);
         };
-        let stream_register = move |_ctx: &mut Ctx, _: i32, _:i32, fncptr: u32| {
-            println!("here, {:?}", fncptr);
+        let stream_register = move |ctx: &mut Ctx, stream_name_ptr: WasmPtr<u16, Array>, stream_name_len: u32, fncptr: u32| {
+            let memory = ctx.memory(0);
+            let stream_name = Util::utf16_string(memory, stream_name_ptr, stream_name_len);
+
+            println!("{}", stream_name);
             req_tx.send(ExecutorRequest::RegisterHandler{
-                    stream: "stream-name".to_string(),
-                    module: "my-module".to_string(), func_ptr: fncptr});
+                    stream: stream_name.to_string(),
+                    module: module_name.clone(), func_ptr: fncptr});
         };
         let fn_table = imports! {
             "env" => {
@@ -175,6 +193,20 @@ impl ExecutorThread {
         println!("would call {}", index);
     }
 
+
+
+}
+
+struct Util;
+impl Util {
+    pub fn utf16_string(mem: &wasmer_runtime::Memory, ptr: WasmPtr<u16, Array>, len: u32) -> String {
+        let str_mem = ptr.deref(mem, 0, len).unwrap();
+
+        let bytes: Vec<u16> = str_mem.iter().map(|x| x.clone().into_inner() as u16).collect();
+        std::char::decode_utf16(bytes)
+                    .map(|r| r.unwrap_or(' '))
+                    .collect::<String>()
+    }
 }
 
 pub struct WasmLoader {}
