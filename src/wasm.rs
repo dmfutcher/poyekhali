@@ -4,85 +4,140 @@ use std::fs::File;
 use std::result::Result;
 use std::thread;
 use std::sync::mpsc;
+use std::collections::HashMap;
 
-use wasmer_runtime::{error, func, imports, instantiate, Array, Ctx, Func, ImportObject, WasmPtr};
+use wasmer_runtime::{func, imports, instantiate, Array, Ctx, Func, WasmPtr};
+// use wasmer_runtime_core::{structures::TypedIndex, types::TableIndex};
 
 type WasmProgram = Box<[u8]>;
 
+// module name, function table index
+type FunctionIndex = (String, u32);
+
 pub struct WasmRuntime{
-    execution_contexts: Vec<WasmExecutionContext>,
+    execution_contexts: HashMap<String, WasmExecutionContext>,
+    stream_handlers: HashMap<String, Vec<FunctionIndex>>,
+    request_servicer: Option<thread::JoinHandle<()>>,
+    req_tx: mpsc::Sender<ExecutorRequest>,
 }
 
 impl WasmRuntime {
 
     pub fn new() -> WasmRuntime {
-        WasmRuntime{
-            execution_contexts: vec!(),
-        }
+        let (tx, rx) = mpsc::channel::<ExecutorRequest>();
+        let mut runtime = WasmRuntime{
+            execution_contexts: HashMap::new(),
+            stream_handlers: HashMap::new(),
+            request_servicer: None,
+            req_tx: tx,
+        };
+        runtime.request_servicer = Some(thread::spawn(|| RuntimeRequestServicer::request_servicer(rx)));
+
+        runtime
     }
 
-    pub fn execute(&self, wasm: &WasmProgram) {
-        let ctx = WasmExecutionContext::new(wasm).expect("Failed to init executionctx");
-        ctx.run();
+    pub fn init_module(&mut self, module_name: String, wasm: &WasmProgram) {
+        let ctx = WasmExecutionContext::new(wasm, self.req_tx.clone()).expect("Failed to init executionctx");
+        ctx.initialise();
+
+        self.execution_contexts.insert(module_name, ctx);
     }
 
     pub fn stop(self) {
-        for c in self.execution_contexts.into_iter() {
+        for (_, c) in self.execution_contexts.into_iter() {
             c.join();
         }
     }
 
 }
 
+struct RuntimeRequestServicer {
+
+}
+impl RuntimeRequestServicer {
+
+    fn request_servicer(rx: mpsc::Receiver<ExecutorRequest>) {
+        while let Ok(msg) = rx.recv() {
+            println!("request_svc: recv {:?}", msg);
+        }
+    }
+
+}
+
 struct WasmExecutionContext {
-    exec_thread: thread::JoinHandle<()>,
-    exec_tx: mpsc::Sender<ExecutorCommand>,
+    thread: thread::JoinHandle<()>,
+    tx_cmd: mpsc::Sender<ExecutorCommand>,
 }
 
 impl WasmExecutionContext {
 
-    fn new(wasm: &WasmProgram) -> Result<WasmExecutionContext, String> {
-        let (tx, rx) = mpsc::channel::<ExecutorCommand>();
-        let exec = ExecutorThread::new(rx, wasm);
-        let thread_handle = thread::spawn(move || exec.run());
+    fn new(wasm: &WasmProgram, tx_request: mpsc::Sender<ExecutorRequest>) -> Result<WasmExecutionContext, String> {
+        let (tx_cmd, rx_cmd) = mpsc::channel::<ExecutorCommand>();
+        let mut exec_thd = ExecutorThread::new(rx_cmd, tx_request, wasm);
+        let thread_handle = thread::spawn(move || exec_thd.run());
 
         Ok(WasmExecutionContext{
-            exec_thread: thread_handle,
-            exec_tx: tx,
+            thread: thread_handle,
+            tx_cmd,
         })
     }
 
-    fn run(self) {
-        self.exec_tx.send(ExecutorCommand::Call("init".to_string()));
+    fn initialise(&self) {
+        self.tx_cmd.send(ExecutorCommand::CallName("init".to_string()));
     }
 
     fn join(self) {
-        self.exec_thread.join();
+        drop(self.tx_cmd);
+        self.thread.join();
     }
 
 }
 
 #[derive(Debug)]
 enum ExecutorCommand {
-    Call(String),
+    CallName(String),
+    CallIndex(u32),
 }
 
+#[derive(Debug)]
+enum ExecutorRequest {
+    RegisterHandler{ stream: String, module: String, func_ptr: u32 }
+}
+unsafe impl Sync for ExecutorRequest {}
+
+
 struct ExecutorThread {
-    rx: mpsc::Receiver<ExecutorCommand>,
-    instance: wasmer_runtime::Instance,
+    cmd_rx: mpsc::Receiver<ExecutorCommand>,
+    req_tx: mpsc::Sender<ExecutorRequest>,
+    instance: Option<wasmer_runtime::Instance>,
+    wasm: WasmProgram,
 }
 
 impl ExecutorThread {
 
-    fn new(rx: mpsc::Receiver<ExecutorCommand>, wasm: &WasmProgram) -> ExecutorThread {
+    fn new(cmd_rx: mpsc::Receiver<ExecutorCommand>, req_tx: mpsc::Sender<ExecutorRequest>, wasm: &WasmProgram) -> ExecutorThread {
+        ExecutorThread{
+            cmd_rx,
+            req_tx,
+            instance: None,
+            wasm: wasm.clone(),
+        }
+    }
+
+    fn run(&mut self) {
+        let req_tx = self.req_tx.clone();
+
         let abort = |_: i32, _: i32, _: i32, _: i32| std::process::exit(-1);
         let log = move |ctx: &mut Ctx, ptr: WasmPtr<u8, Array>, len: u32| {
             let memory = ctx.memory(0);
             let string = ptr.get_utf8_string(memory, len * 2).unwrap();
             println!("log: {}", string);
         };
-        let stream_register = |_ctx: &mut Ctx, _: i32, _:i32, fncptr:i32| {
-            println!("here, {}", fncptr);
+        let stream_register = move |_ctx: &mut Ctx, _: i32, _:i32, fncptr: u32| {
+            println!("here, {:?}", fncptr);
+            req_tx.send(ExecutorRequest::RegisterHandler{
+                    stream: "stream-name".to_string(),
+                    module: "my-module".to_string(), func_ptr: fncptr});
         };
         let fn_table = imports! {
             "env" => {
@@ -96,29 +151,28 @@ impl ExecutorThread {
             }
         };
         
-        let instance = instantiate(wasm, &fn_table).unwrap(); // TODO: No unwrap
+        let instance = instantiate(&self.wasm, &fn_table).unwrap(); // TODO: No unwrap
+        self.instance = Some(instance);
 
-        ExecutorThread{
-            rx,
-            instance
-        }
-    }
-
-    fn run(&self) {
-        while let Ok(cmd) = self.rx.recv() {
+        while let Ok(cmd) = self.cmd_rx.recv() {
             println!("rcv: {:?}", cmd);
             match cmd {
-                ExecutorCommand::Call(fn_name) => self.call_function(fn_name)
+                ExecutorCommand::CallName(fn_name) => self.call_named_function(fn_name),
+                ExecutorCommand::CallIndex(idx) => println!("TODO: {}", idx),
             }
         }
     }
 
     // TODO: How can we handle return values? Can we avoid needing to use return values?
-    fn call_function(&self, fn_name: String) {
-        match self.instance.exports.get::<Func<(), i32>>(fn_name.as_str()) {
+    fn call_named_function(&self, fn_name: String) {
+        match self.instance.as_ref().unwrap().exports.get::<Func<(), i32>>(fn_name.as_str()) {
             Ok(f) => { f.call(); }
             Err(e) => println!("Could not call fn {}: {}", fn_name, e)
         };
+    }
+
+    fn call_indexed_function(&self, index: u32) {
+        println!("would call {}", index);
     }
 
 }
