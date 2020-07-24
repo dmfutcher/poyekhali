@@ -2,9 +2,9 @@
 
 // Import our host-exposed `log` function
 import { log } from './host';
-import { register, Test } from './stream';
+import { register } from './stream';
 
-export function on_timer_tick(_x: Test): void {
+function on_timer_tick(): void {
   log('in on_timer_tick');
 }
 

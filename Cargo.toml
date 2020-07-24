@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 wasmer-runtime="0.17"
+wasmer-runtime-core="0.17"

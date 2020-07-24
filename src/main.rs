@@ -10,7 +10,10 @@ fn main() -> Result<(), String> {
     let mut runtime = WasmRuntime::new();
     runtime.init_module("main".to_owned(), &wasm);
 
-    std::thread::sleep_ms(2000);
+    while (true) {
+        runtime.publish_stream_change("timer:seconds".to_owned());
+        std::thread::sleep_ms(1000);
+    }
 
     runtime.stop();
 

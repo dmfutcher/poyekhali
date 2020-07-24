@@ -7,7 +7,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::collections::HashMap;
 
 use wasmer_runtime::{func, imports, instantiate, Array, Ctx, Func, WasmPtr};
-// use wasmer_runtime_core::{structures::TypedIndex, types::TableIndex};
+use wasmer_runtime_core::{structures::TypedIndex, types::TableIndex};
 
 type WasmProgram = Box<[u8]>;
 
@@ -45,6 +45,17 @@ impl WasmRuntime {
         self.execution_contexts.insert(module_name, ctx);
     }
 
+    pub fn publish_stream_change(&self, stream: String) {
+        let stream_handlers = self.stream_handlers.lock().unwrap();
+        if let Some(handlers) = stream_handlers.get(&stream) {
+            for func_idx in handlers {
+                if let Some(exec_ctx) = self.execution_contexts.get(&func_idx.module) {
+                    exec_ctx.tx_cmd.send(ExecutorCommand::CallIndex(func_idx.func));
+                }
+            }
+        }
+    }
+
     pub fn stop(self) {
         for (_, c) in self.execution_contexts.into_iter() {
             c.join();
@@ -67,8 +78,6 @@ impl RuntimeRequestServicer {
 
                     let mut h = handlers.lock().unwrap();
                     h.entry(stream).or_insert_with(Vec::new).push(func_idx);
-
-                    println!("{:?}", h);
                 }
             }
         }
@@ -152,10 +161,9 @@ impl ExecutorThread {
             let memory = ctx.memory(0);
             let stream_name = Util::utf16_string(memory, stream_name_ptr, stream_name_len);
 
-            println!("{}", stream_name);
             req_tx.send(ExecutorRequest::RegisterHandler{
                     stream: stream_name.to_string(),
-                    module: module_name.clone(), func_ptr: fncptr});
+                    module: module_name.clone(), func_ptr: fncptr as u32});
         };
         let fn_table = imports! {
             "env" => {
@@ -173,10 +181,9 @@ impl ExecutorThread {
         self.instance = Some(instance);
 
         while let Ok(cmd) = self.cmd_rx.recv() {
-            println!("rcv: {:?}", cmd);
             match cmd {
                 ExecutorCommand::CallName(fn_name) => self.call_named_function(fn_name),
-                ExecutorCommand::CallIndex(idx) => println!("TODO: {}", idx),
+                ExecutorCommand::CallIndex(idx) => self.call_indexed_function(idx),
             }
         }
     }
@@ -189,11 +196,12 @@ impl ExecutorThread {
         };
     }
 
-    fn call_indexed_function(&self, index: u32) {
-        println!("would call {}", index);
+    fn call_indexed_function(&mut self, index: u32) {
+        let table_idx = TableIndex::new(index as usize);
+        let instance = self.instance.as_mut().unwrap();
+        let ctx = instance.context_mut();
+        ctx.call_with_table_index(table_idx, &[]);
     }
-
-
 
 }
 

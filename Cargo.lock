@@ -441,6 +441,7 @@ name = "project-belka"
 version = "0.1.0"
 dependencies = [
  "wasmer-runtime",
+ "wasmer-runtime-core",
 ]
 
 [[package]]
