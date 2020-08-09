@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use wasmer_runtime::{func, imports, instantiate, Array, Ctx, Func, WasmPtr};
 use wasmer_runtime_core::{structures::TypedIndex, types::TableIndex};
 
+use crate::stream::StreamUpdate;
+
 type WasmProgram = Box<[u8]>;
 
 #[derive(Debug)]
@@ -18,7 +20,7 @@ pub struct WasmRuntime{
     execution_contexts: HashMap<String, WasmExecutionContext>,
     stream_handlers: Arc<Mutex<HashMap<String, Vec<FunctionIndex>>>>,
     request_servicer: Option<thread::JoinHandle<()>>,
-    req_tx: mpsc::Sender<ExecutorRequest>,
+    req_tx: ExecutorRequestSender,
 }
 
 impl WasmRuntime {
@@ -39,7 +41,7 @@ impl WasmRuntime {
     }
 
     pub fn init_module(&mut self, module_name: String, wasm: &WasmProgram) {
-        let ctx = WasmExecutionContext::new(module_name.clone(), wasm, self.req_tx.clone()).expect("Failed to init executionctx");
+        let ctx = WasmExecutionContext::new(module_name.clone(), wasm, self.request_channel()).expect("Failed to init executionctx");
         ctx.initialise();
 
         self.execution_contexts.insert(module_name, ctx);
@@ -54,6 +56,10 @@ impl WasmRuntime {
                 }
             }
         }
+    }
+
+    pub fn request_channel(&self) -> ExecutorRequestSender {
+        self.req_tx.clone()
     }
 
     pub fn stop(self) {
@@ -78,6 +84,9 @@ impl RuntimeRequestServicer {
 
                     let mut h = handlers.lock().unwrap();
                     h.entry(stream).or_insert_with(Vec::new).push(func_idx);
+                },
+                ExecutorRequest::StreamUpdate{stream, update} => {
+                    println!("Stream update: {} {:?}", stream, update);
                 }
             }
         }
@@ -121,11 +130,13 @@ enum ExecutorCommand {
 }
 
 #[derive(Debug)]
-enum ExecutorRequest {
-    RegisterHandler{ stream: String, module: String, func_ptr: u32 }
+pub enum ExecutorRequest {
+    RegisterHandler{ stream: String, module: String, func_ptr: u32 },
+    StreamUpdate{ stream: String, update: StreamUpdate },
 }
 unsafe impl Sync for ExecutorRequest {}
 
+pub type ExecutorRequestSender = mpsc::Sender<ExecutorRequest>;
 
 struct ExecutorThread {
     module_name: String,
