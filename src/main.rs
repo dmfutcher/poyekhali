@@ -1,4 +1,5 @@
-extern crate wasmer_runtime;
+
+#[macro_use] extern crate wasmer;
 
 mod wasm;
 mod stream;
@@ -16,11 +17,11 @@ fn main() -> Result<(), String> {
     streams.start_streams();
 
     while (true) {
-        runtime.publish_stream_change("timer:seconds".to_owned());
+        // runtime.publish_stream_change("timer:seconds".to_owned());
         std::thread::sleep_ms(1000);
     }
 
-    runtime.stop();
+    // runtime.stop();
 
     Ok(())
 }

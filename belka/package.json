@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "asc src/index.ts -b build/optimized.wasm -t build/optimized.wat --sourceMap --optimize --exportTable --runtime stub"
+    "build": "asc src/index.ts -b build/optimized.wasm -t build/optimized.wat --sourceMap --exportTable --runtime stub"
   },
   "author": "",
   "license": "ISC",

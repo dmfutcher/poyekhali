@@ -1,4 +1,4 @@
-# ¡poyekhali!
+# Поехали! (poyekhali)
 
 being a work-in-progress.
 

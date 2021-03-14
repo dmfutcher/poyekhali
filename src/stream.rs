@@ -1,9 +1,9 @@
 use std::thread;
 
-use crate::wasm::{WasmRuntime, ExecutorRequest, ExecutorRequestSender};
+use crate::wasm::{WasmRuntime, RuntimeRequest, RuntimeRequestSender};
 
 pub struct StreamManager {
-    exec_request_chan: ExecutorRequestSender,
+    exec_request_chan: RuntimeRequestSender,
 }
 
 impl StreamManager {
@@ -26,16 +26,16 @@ impl StreamManager {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamUpdate {
-    TimerUpdate{ seconds: u64 },
+    TimerUpdate{ seconds: i64 },
 }
 
 trait StreamSource: Send + Sync + 'static {
     fn frequency(&self) -> u32;
-    fn tick(&mut self, chan: &ExecutorRequestSender);
+    fn tick(&mut self, chan: &RuntimeRequestSender);
     
-    fn run(&mut self, chan: ExecutorRequestSender) {
+    fn run(&mut self, chan: RuntimeRequestSender) {
         let hertz = self.frequency();
 
         loop {
@@ -47,10 +47,8 @@ trait StreamSource: Send + Sync + 'static {
 
 
 struct Timer {
-    seconds: u64,
+    seconds: i64,
 }
-
-impl Timer {}
 
 impl Timer {
     fn new() -> Timer {
@@ -64,10 +62,10 @@ impl StreamSource for Timer {
         1
     }
 
-    fn tick(&mut self, chan: &ExecutorRequestSender) {
+    fn tick(&mut self, chan: &RuntimeRequestSender) {
         let update = StreamUpdate::TimerUpdate{ seconds: self.seconds };
         self.seconds += 1;
-        chan.send(ExecutorRequest::StreamUpdate{ stream: "timer:seconds".to_owned(), update });
+        chan.send(RuntimeRequest::StreamUpdate{ stream: "timer:seconds".to_owned(), update });
     }
 
 }

@@ -3,7 +3,11 @@ import { register } from './stream';
 
 var countdownVal = 10;
 
-function on_timer_tick(): void {
+export function test(i: i64): void {
+  log('hello, world');
+}
+
+export function on_timer_tick(_: i64): void {
   if (countdownVal == 10) {
     log('Countdown initiated');
   } else if (countdownVal == 0) {
@@ -17,5 +21,6 @@ function on_timer_tick(): void {
 
 export function init(): u8 {
   register('timer:seconds', on_timer_tick);
+  log('initialised');
   return 0;
 }
